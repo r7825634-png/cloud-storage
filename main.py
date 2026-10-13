@@ -1,99 +1,60 @@
-import os, json
+import os, json, threading
+from flask import Flask
 import telebot
-from telebot import types
 
 TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = os.environ.get("CHANNEL_ID") # اختياري، سنشرحه تحت
-
 bot = telebot.TeleBot(TOKEN)
 DB_FILE = "db.json"
+
+# سيرفر وهمي مجاني عشان Render ما يطفيك
+app = Flask(__name__)
+@app.route('/')
+def home(): return "Bot is Alive!"
+def run_flask():
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+threading.Thread(target=run_flask, daemon=True).start()
 
 def load_db():
     if os.path.exists(DB_FILE):
         try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            with open(DB_FILE, 'r', encoding='utf-8') as f: return json.load(f)
         except: return {}
     return {}
+def save_db(d):
+    with open(DB_FILE, 'w', encoding='utf-8') as f: json.dump(d, f, ensure_ascii=False)
 
-def save_db(data):
-    with open(DB_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False)
-
-@bot.message_handler(commands=['start'])
-def start(m):
+@bot.message_handler(commands=['start','storage','stats'])
+def cmds(m):
     db = load_db()
     uid = str(m.chat.id)
-    if uid not in db:
-        db[uid] = []
-        save_db(db)
+    files = db.get(uid, [])
+    if m.text.startswith('/start'):
+        if uid not in db: db[uid] = []; save_db(db)
+        bot.send_message(m.chat.id, f"☁️ التخزين السحابي\nملفاتك: {len(files)}\nأرسل أي ملف الآن")
+    elif m.text.startswith('/storage'):
+        if not files: bot.send_message(m.chat.id, "📁 فاضي"); return
+        bot.send_message(m.chat.id, f"📁 عندك {len(files)} ملف:")
+        for f in files[-10:]:
+            try:
+                if f['type'] == 'photo': bot.send_photo(m.chat.id, f['id'])
+                else: bot.send_document(m.chat.id, f['id'], caption=f['name'])
+            except: pass
+    elif m.text.startswith('/stats'):
+        bot.send_message(m.chat.id, f"📊 عدد الملفات: {len(files)}")
 
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("📁 ملفاتي المحفوظة", callback_data="show_storage"))
-    markup.add(types.InlineKeyboardButton("📊 إحصائياتي", callback_data="show_stats"), types.InlineKeyboardButton("🆘 مساعدة", callback_data="show_help"))
-
-    bot.send_message(m.chat.id, f"☁️ **أهلاً بك في التخزين السحابي غير المحدود**\n\nأرسل أي ملف الآن وسأحفظه لك للأبد.\nحتى لو حذفت تليجرام ورجعت، راح تلاقيه.\n\n📦 عدد ملفاتك حالياً: {len(db.get(uid, []))}", reply_markup=markup, parse_mode="Markdown")
-
-@bot.message_handler(content_types=['document','photo','video','audio','voice','video_note'])
+@bot.message_handler(content_types=['document','photo','video','audio','voice'])
 def save_file(m):
     db = load_db()
     uid = str(m.chat.id)
     if uid not in db: db[uid] = []
-
-    file_id = None
-    file_name = "ملف"
-    if m.document:
-        file_id = m.document.file_id
-        file_name = m.document.file_name
-    elif m.photo:
-        file_id = m.photo[-1].file_id
-        file_name = f"صورة_{m.photo[-1].file_id[:5]}.jpg"
-    elif m.video:
-        file_id = m.video.file_id
-        file_name = m.video.file_name or "فيديو.mp4"
-    elif m.audio:
-        file_id = m.audio.file_id
-        file_name = m.audio.file_name or "صوت.mp3"
-
+    file_id, f_type, f_name = None, "doc", "ملف"
+    if m.document: file_id, f_type, f_name = m.document.file_id, "doc", m.document.file_name
+    elif m.photo: file_id, f_type, f_name = m.photo[-1].file_id, "photo", f"صورة_{len(db[uid])+1}.jpg"
+    elif m.video: file_id, f_type, f_name = m.video.file_id, "video", "فيديو"
+    elif m.audio: file_id, f_type, f_name = m.audio.file_id, "audio", "صوت"
     if file_id:
-        db[uid].append({"id": file_id, "name": file_name})
+        db[uid].append({"id": file_id, "name": f_name, "type": f_type})
         save_db(db)
-        bot.reply_to(m, f"✅ تم حفظ **{file_name}**\nلن ينحذف إلا يدوياً.", parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    if call.data == "show_storage":
-        m = call.message
-        m.text = "/storage"
-        handle_storage(m)
-    elif call.data == "show_stats":
-        m = call.message
-        m.text = "/stats"
-        handle_storage(m)
-    elif call.data == "show_help":
-        bot.send_message(call.message.chat.id, "🆘 أرسل أي ملف لحفظه.\n/storage - لعرض ملفاتك\n/search - للبحث\n/stats - للإحصائيات")
-
-@bot.message_handler(commands=['storage','stats','search','help'])
-def handle_storage(m):
-    db = load_db()
-    uid = str(m.chat.id)
-    files = db.get(uid, [])
-
-    if m.text.startswith('/storage'):
-        if not files:
-            bot.send_message(m.chat.id, "📁 مخزنك فاضي، أرسل أي ملف الآن")
-            return
-        bot.send_message(m.chat.id, f"📁 عندك {len(files)} ملف. هذه آخر 10:")
-        for f in files[-10:]:
-            try:
-                bot.send_document(m.chat.id, f['id'], caption=f"📄 {f['name']}")
-            except:
-                bot.send_message(m.chat.id, f"📄 {f['name']}")
-    elif m.text.startswith('/stats'):
-        bot.send_message(m.chat.id, f"📊 إحصائياتك:\nعدد الملفات: {len(files)}\nنوع التخزين: تليجرام غير محدود ☁️")
-    elif m.text.startswith('/search'):
-        bot.send_message(m.chat.id, "🔍 أرسل اسم الملف للبحث عنه (هذه الميزة قيد التطوير)")
-    elif m.text.startswith('/help'):
-        bot.send_message(m.chat.id, "🆘 فقط أرسل الملفات هنا")
+        bot.reply_to(m, f"✅ تم حفظ {f_name}")
 
 bot.infinity_polling()
